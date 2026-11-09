@@ -1,0 +1,621 @@
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local Players = game:GetService("Players")
+
+-- Placement Module
+local PlacementModule = require(
+	ReplicatedStorage:WaitForChild("Module"):WaitForChild("PlacementSystem")
+)
+
+local placement = PlacementModule.new(
+	1,
+	ReplicatedFirst.Assets.Bombers,
+	Enum.KeyCode.R,
+	Enum.KeyCode.X
+)
+
+-- Player
+local player = Players.LocalPlayer
+local playerGUI: PlayerGui = player:WaitForChild("PlayerGui")
+
+local character
+local plot
+local tool
+
+-- Metadata
+local BombersMetaData = require(
+	ReplicatedStorage:WaitForChild("Module")
+		:WaitForChild("Libraries")
+		:WaitForChild("Bombers")
+)
+
+local BreakablesMetaData = require(
+	ReplicatedStorage:WaitForChild("Module")
+		:WaitForChild("Libraries")
+		:WaitForChild("Breakables")
+)
+
+-- Bools
+local placebool
+local PlaceorPickActive = false
+
+-- UI Shortcuts
+local HUD = playerGUI:WaitForChild("HUD")
+local PopRecs = playerGUI:WaitForChild("RecPopups")
+
+local Mobile = PopRecs:WaitForChild("Popups"):WaitForChild("PhoneButtons")
+local MobileButtons = Mobile.Frame
+
+-- Phone Buttons
+local RotateBtn = MobileButtons.Rotate
+local PlaceBtn = MobileButtons.Place
+
+-- Console Control Helpers
+local ConsoleHelpers = playerGUI
+	:WaitForChild("HUD")
+	:WaitForChild("Popups")
+	:WaitForChild("ConsoleControls")
+	.Frame
+
+-- PC Control Helpers
+local PCHelpers = playerGUI
+	:WaitForChild("HUD")
+	:WaitForChild("Popups")
+	:WaitForChild("PcControls")
+	.Frame
+
+-- Current input type
+local showWhat
+
+--------------------------------------------------
+-- Plot
+--------------------------------------------------
+
+local function getPlot()
+	if not plot or not plot.Parent then
+		ReplicatedStorage.Remotes.AddPlot:FireServer()
+
+		plot = workspace.Tycoons:WaitForChild(
+			`{player.Name}'s Plot`
+		)
+	end
+
+	return plot
+end
+
+--------------------------------------------------
+-- Controller
+--------------------------------------------------
+
+local function getControllerType()
+	if not UserInputService.GamepadEnabled then
+		return nil
+	end
+
+	local image = UserInputService:GetImageForKeyCode(
+		Enum.KeyCode.ButtonY
+	)
+
+	if string.find(image, "PlayStation") then
+		return "PlayStation"
+
+	elseif string.find(image, "Xbox") then
+		return "Xbox"
+
+	else
+		return "Generic"
+	end
+end
+
+--------------------------------------------------
+-- Phone Controls
+--------------------------------------------------
+
+local function showPhoneControls()
+
+	if not UserInputService.TouchEnabled
+		or showWhat ~= "Phone" then
+
+		MobileButtons.Visible = false
+		return
+	end
+
+	if not PlaceorPickActive then
+		MobileButtons.Visible = false
+		return
+	end
+
+	if placebool then
+
+		RotateBtn.Visible = true
+		PlaceBtn.Visible = true
+
+		PlaceBtn.Main.Text.Amount.Text = "Place"
+		PlaceBtn.Main.Text.Amount2.Text = "Place"
+
+		playerGUI.MobileButtons.Rotate.Visible = true
+
+	elseif not placebool and PlaceorPickActive then
+
+		RotateBtn.Visible = false
+		playerGUI.MobileButtons.Rotate.Visible = false
+
+		PlaceBtn.Visible = true
+
+		PlaceBtn.Main.Text.Amount.Text = "Pickup"
+		PlaceBtn.Main.Text.Amount2.Text = "Pickup"
+	end
+
+	MobileButtons.Visible = true
+end
+
+--------------------------------------------------
+-- Controller Controls
+--------------------------------------------------
+
+local function updateControllerText(Place)
+	local controller = getControllerType()
+
+	if controller == "PlayStation" then
+
+		ConsoleHelpers.Rotate.Text =
+			'<font color="#ffaa00">△</font> - Rotate'
+
+		ConsoleHelpers.Place.Text =
+			`<font color="#00ddff">R2</font> - {Place}`
+
+		ConsoleHelpers.Cancel.Text =
+			'<font color="#ff4747">○</font> - Cancel'
+
+	elseif controller == "Xbox" then
+
+		ConsoleHelpers.Rotate.Text =
+			'<font color="#ffaa00">Y</font> - Rotate'
+
+		ConsoleHelpers.Place.Text =
+			`<font color="#00ddff">RT</font> - {Place}`
+
+		ConsoleHelpers.Cancel.Text =
+			'<font color="#ff4747">B</font> - Cancel'
+
+	else
+
+		ConsoleHelpers.Rotate.Text =
+			'<font color="#ffaa00">Y</font> - Rotate'
+
+		ConsoleHelpers.Place.Text =
+			`<font color="#00ddff">R2</font> - {Place}`
+
+		ConsoleHelpers.Cancel.Text =
+			'<font color="#ff4747">B</font> - Cancel'
+	end
+end
+
+local function showControllerControls()
+
+	if not UserInputService.GamepadEnabled
+		or showWhat ~= "Console" then
+
+		ConsoleHelpers.Visible = false
+		return
+	end
+
+	if not PlaceorPickActive then
+		ConsoleHelpers.Visible = false
+		return
+	end
+
+	if placebool then
+
+		ConsoleHelpers.Place.Visible = true
+		ConsoleHelpers.Rotate.Visible = true
+
+		updateControllerText("Place")
+
+	else
+
+		ConsoleHelpers.Place.Visible = true
+		ConsoleHelpers.Rotate.Visible = false
+
+		updateControllerText("Pickup")
+	end
+
+	ConsoleHelpers.Visible = true
+end
+
+--------------------------------------------------
+-- PC Controls
+--------------------------------------------------
+
+local function showPCControls()
+
+	if not UserInputService.KeyboardEnabled
+		or showWhat ~= "PC" then
+
+		PCHelpers.Visible = false
+		return
+	end
+
+	if not PlaceorPickActive then
+		PCHelpers.Visible = false
+		return
+	end
+
+	if placebool then
+
+		PCHelpers.Place.Visible = true
+		PCHelpers.Rotate.Visible = true
+
+	else
+
+		PCHelpers.Place.Visible = true
+		PCHelpers.Rotate.Visible = false
+	end
+
+	PCHelpers.Visible = true
+end
+
+--------------------------------------------------
+-- Input Detection
+--------------------------------------------------
+
+local function updateInputType(inputType)
+
+	if inputType.Name:find("Gamepad") then
+
+		showWhat = "Console"
+
+	elseif inputType.Name:find("Mouse")
+		or inputType.Name:find("Keyboard") then
+
+		showWhat = "PC"
+
+	elseif inputType.Name:find("Touch") then
+
+		showWhat = "Phone"
+	end
+
+	showControllerControls()
+	showPCControls()
+	showPhoneControls()
+end
+
+local function detectCurrentInput()
+
+	local lastInput = UserInputService:GetLastInputType()
+
+	if lastInput.Name:find("Gamepad") then
+
+		showWhat = "Console"
+
+	elseif lastInput.Name:find("Mouse")
+		or lastInput.Name:find("Keyboard") then
+
+		showWhat = "PC"
+
+	elseif UserInputService.TouchEnabled then
+
+		showWhat = "Phone"
+
+	else
+
+		showWhat = "PC"
+	end
+end
+
+UserInputService.LastInputTypeChanged:Connect(updateInputType)
+
+detectCurrentInput()
+
+showPhoneControls()
+showControllerControls()
+showPCControls()
+
+--------------------------------------------------
+-- Character Setup
+--------------------------------------------------
+
+local function setupCharacter(newCharacter)
+
+	character = newCharacter
+
+	-- Reset old placement state
+	if placebool then
+		placement.cancel()
+	end
+
+	if placement.PickupCancel then
+		placement:PickupCancel()
+	end
+
+	placebool = false
+	PlaceorPickActive = false
+	tool = nil
+
+	showControllerControls()
+	showPCControls()
+	showPhoneControls()
+
+	--------------------------------------------------
+	-- Tool Added
+	--------------------------------------------------
+
+	character.ChildAdded:Connect(function(Child)
+
+		getPlot()
+
+		if not Child:IsA("Tool") then
+			return
+		end
+
+		if player:GetAttribute("DisablePlacementTutorial") then
+			return
+		end
+
+		--------------------------------------------------
+		-- Placement Tool
+		--------------------------------------------------
+
+		if BombersMetaData[Child.Name]
+			or BreakablesMetaData[Child.Name] then
+
+			placebool = placement:activate(
+				Child.Name,
+				plot.PlotTest.Placed,
+				plot.PlotTest,
+				false
+			)
+
+			--------------------------------------------------
+			-- Pickup Tool
+			--------------------------------------------------
+
+		elseif Child.Name == "Pickup" then
+
+			placement:Pickup(
+				plot.PlotTest,
+				plot.PlotTest.Placed
+			)
+
+		else
+			return
+		end
+
+		tool = Child
+		PlaceorPickActive = true
+
+		if showWhat == "Console" then
+
+			showControllerControls()
+
+		elseif showWhat == "PC" then
+
+			showPCControls()
+
+		elseif showWhat == "Phone" then
+
+			showPhoneControls()
+		end
+	end)
+
+	--------------------------------------------------
+	-- Tool Removed
+	--------------------------------------------------
+
+	character.ChildRemoved:Connect(function(Child)
+
+		getPlot()
+
+		if not Child:IsA("Tool") then
+			return
+		end
+
+		-- Only handle the currently active tool
+		if Child ~= tool then
+			return
+		end
+
+		if placebool then
+
+			placement.cancel()
+			placebool = false
+
+		elseif Child.Name == "Pickup" then
+
+			placement:PickupCancel()
+		end
+
+		tool = nil
+		PlaceorPickActive = false
+
+		showControllerControls()
+		showPCControls()
+		showPhoneControls()
+	end)
+end
+
+--------------------------------------------------
+-- Initial Character
+--------------------------------------------------
+
+setupCharacter(
+	player.Character
+		or player.CharacterAdded:Wait()
+)
+
+--------------------------------------------------
+-- Character Respawn
+--------------------------------------------------
+
+player.CharacterAdded:Connect(function(newCharacter)
+
+	setupCharacter(newCharacter)
+
+end)
+
+--------------------------------------------------
+-- Placement / Pickup Input
+--------------------------------------------------
+
+local function inputfunc()
+
+	getPlot()
+
+	if not character or not character.Parent then
+		return
+	end
+
+	--------------------------------------------------
+	-- Pickup
+	--------------------------------------------------
+
+	if not placebool then
+
+		if character:FindFirstChild("Pickup") then
+
+			placement:PickupRequest(
+				ReplicatedStorage.Remotes.Pickup
+			)
+		end
+
+		return
+	end
+
+	--------------------------------------------------
+	-- Placement
+	--------------------------------------------------
+
+	if not tool or not tool.Parent then
+		return
+	end
+
+	local Ups = tool:GetAttribute("Upgrades") or 0
+
+	placement:place(
+		ReplicatedStorage.Remotes.Place,
+		Ups
+	)
+end
+
+--------------------------------------------------
+-- UI Detection
+--------------------------------------------------
+
+local function isTouchingUI(position: Vector2): boolean
+
+	local guiObjects = playerGUI:GetGuiObjectsAtPosition(
+		position.X,
+		position.Y
+	)
+
+	for _, guiObject in ipairs(guiObjects) do
+
+		if guiObject:IsDescendantOf(playerGUI.HUD)
+			or guiObject:IsDescendantOf(playerGUI.MobileButtons) then
+
+			if guiObject:IsA("GuiButton")
+				and guiObject.Visible then
+
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+--------------------------------------------------
+-- Keyboard / Mouse / Controller Input
+--------------------------------------------------
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+
+	if gameProcessed then
+		return
+	end
+
+	-- Don't place when clicking/tapping UI
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		if isTouchingUI(input.Position) then
+			return
+		end
+	end
+
+	--------------------------------------------------
+	-- Place / Pickup
+	--------------------------------------------------
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.KeyCode == Enum.KeyCode.ButtonR2 then
+
+		inputfunc()
+
+		--------------------------------------------------
+		-- Cancel
+		--------------------------------------------------
+
+	elseif (
+		input.UserInputType == Enum.UserInputType.Keyboard
+			and input.KeyCode == Enum.KeyCode.X
+		) or input.KeyCode == Enum.KeyCode.ButtonB then
+
+		if not tool then
+			return
+		end
+
+		tool.Parent = player.Backpack
+
+		--------------------------------------------------
+		-- Rotate
+		--------------------------------------------------
+
+	elseif input.KeyCode == Enum.KeyCode.ButtonY then
+
+		placement:Rotate()
+	end
+end)
+
+--------------------------------------------------
+-- Mobile Buttons
+--------------------------------------------------
+
+playerGUI.MobileButtons.Rotate.Activated:Connect(function()
+
+	placement:Rotate()
+
+end)
+
+RotateBtn.Activated:Connect(function()
+
+	placement:Rotate()
+
+end)
+
+MobileButtons.Place.Activated:Connect(function()
+
+	inputfunc()
+
+end)
+
+--------------------------------------------------
+-- Plot Event
+--------------------------------------------------
+
+ReplicatedStorage.Remotes.AddPlot.OnClientEvent:Connect(function(Plot)
+
+	plot = workspace.Tycoons:WaitForChild(Plot)
+
+end)
+
+--------------------------------------------------
+-- Initial UI Update
+--------------------------------------------------
+
+showPhoneControls()
+showControllerControls()
+showPCControls()
