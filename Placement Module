@@ -1,0 +1,906 @@
+-- settings
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundsPlay = require(ReplicatedStorage.Module.Sounds)
+local Notifications = require(ReplicatedStorage.Module.Notifications)
+
+local userInputService = game:GetService("UserInputService")
+local guiService = game:GetService("GuiService")
+
+-- bools
+local interpolation = true
+local moveByGrid = true
+local buildModePlacement = true
+
+local pickupMode = false
+local pickupHighlight
+
+local RotationVal
+
+--Ints
+local rotationStep = 90
+local maxHeight = 90
+
+local MaxTilt = 50
+local TiltStrength = 18.5
+local MoveSmooth = 0.1
+local ReturnSmooth = 0.4
+local TUTORIAL_TENT_DISTANCE = 10
+
+--Number/Floats
+local LerpSpeed = 0.7
+local lastValidCFrame
+local lastPickupTarget
+
+-- other
+GridTexture = "rbxassetid://6372755229"
+local collided = nil
+
+local module = {}
+module.__index = module
+
+local hitboxOutlines = {}
+local placedAddedConnection: RBXScriptConnection?
+local placedRemovedConnection: RBXScriptConnection?
+
+local HITBOX_OUTLINE_COLOR = Color3.fromRGB(204, 0, 0)
+local HITBOX_OUTLINE_THICKNESS = .1
+
+local players = game:GetService("Players")
+local runService = game:GetService("RunService")
+local contextActionService = game:GetService("ContextActionService")
+
+local player = players.LocalPlayer
+local Character = player.Character or player.CharacterAdded:Wait()
+local mouse = player:GetMouse()
+
+--constructor Variables
+local GridSize
+local ItemLocation
+local RotateKey
+local TerminateKey
+local highlight = Instance.new("Highlight" , game.ReplicatedFirst)
+highlight.FillTransparency = .25
+
+-- Activation Variables
+
+local object
+local Placedobjects
+local plot
+local stackable
+local objectHitbox 
+
+--Variables for Calculations
+
+local posX,posY,posZ
+local speed = 1
+local rotation = 0
+
+local visualTilt = Vector3.zero
+local lastPosition
+
+
+local lastMouse = Vector2.new(mouse.X, mouse.Y)
+local visualRotation = Vector2.zero
+
+local MAX_TILT = 12
+local TILT_SPEED = 0.25
+local RETURN_SPEED = 0.35
+
+--Quick type vars
+local cframe = CFrame.new
+local angles = CFrame.fromEulerAnglesXYZ
+local clamp = math.clamp
+
+local function verifyPlane()
+	return plot.Size.X%GridSize == 0 and plot.Size.Z%GridSize == 0
+end
+
+local function removeHitboxOutline(model: Instance)
+	local outline = hitboxOutlines[model]
+
+	if outline then
+		outline:Destroy()
+		hitboxOutlines[model] = nil
+	end
+end
+
+local function isPointerOverUI()
+	local guiObjects = player.PlayerGui:GetGuiObjectsAtPosition(mouse.X, mouse.Y)
+
+	for _, guiObject in ipairs(guiObjects) do
+		if guiObject:IsA("GuiObject")
+			and guiObject.Visible
+			and guiObject.Active then
+
+			return true
+		end
+	end
+
+	return false
+end
+
+local function addHitboxOutline(model: Instance)
+	if not model:IsA("Model") then
+		return
+	end
+
+	if model == object then
+		return
+	end
+
+	if model:GetAttribute("Placing") then
+		return
+	end
+
+	local primaryPart = model.PrimaryPart
+
+	if not primaryPart then
+		return
+	end
+
+	if hitboxOutlines[model] then
+		return
+	end
+
+	local outline = Instance.new("Part")
+	outline.Name = "PlacementHitboxOutline"
+	outline.Anchored = true
+	outline.CanCollide = false
+	outline.CanQuery = false
+	outline.CanTouch = false
+	outline.Transparency = 0.85
+	outline.Size = Vector3.new(primaryPart.Size.X,primaryPart.Size.Y * .1,primaryPart.Size.Z) + Vector3.new(1,0,1)
+	outline.CFrame = CFrame.new(primaryPart.Position - Vector3.new(0,primaryPart.Size.Y/2,0))
+	outline.Parent = primaryPart
+	outline.Color = Color3.fromRGB(255, 0, 0)
+	outline.Material = Enum.Material.Neon
+	
+	local newhighlight = Instance.new("Highlight")
+	newhighlight.FillTransparency = .75
+	newhighlight.FillColor = Color3.fromRGB(255, 0, 0)
+	newhighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+	newhighlight.OutlineTransparency = 0
+	newhighlight.Parent = outline
+	newhighlight.Adornee = model
+	newhighlight.DepthMode = Enum.HighlightDepthMode.Occluded
+	
+	local selectionbox = Instance.new("SelectionBox")
+	selectionbox.Name = "PlacementHitboxOutline"
+	selectionbox.Adornee = outline
+	selectionbox.Color3 = Color3.fromRGB(255, 0, 0)
+	selectionbox.LineThickness = .15
+	selectionbox.SurfaceTransparency = 1
+	selectionbox.Parent = outline
+
+
+	hitboxOutlines[model] = outline
+end
+
+local function clearHitboxOutlines()
+	if placedAddedConnection then
+		placedAddedConnection:Disconnect()
+		placedAddedConnection = nil
+	end
+
+	if placedRemovedConnection then
+		placedRemovedConnection:Disconnect()
+		placedRemovedConnection = nil
+	end
+
+	for model, outline in pairs(hitboxOutlines) do
+		outline:Destroy()
+		hitboxOutlines[model] = nil
+	end
+end
+
+local function showHitboxOutlines()
+	clearHitboxOutlines()
+
+	if not Placedobjects then
+		warn("No Placed Objects")
+		return
+	end
+	local placed = Placedobjects:GetChildren()
+	local Bombers = Placedobjects.Bombers:GetChildren()
+	local Breakables = Placedobjects.Breakables:GetChildren()
+	local s = {}
+	for i,v in placed do
+		table.insert(s,v)
+	end
+	for i,v in Breakables do
+		table.insert(s,v)
+	end
+	for i,v in Bombers do
+		table.insert(s,v)
+	end
+	for _, model in ipairs(s) do
+		addHitboxOutline(model)
+	end
+
+	placedAddedConnection = Placedobjects.ChildAdded:Connect(function(child)
+		if child ~= object then
+			addHitboxOutline(child)
+		end
+	end)
+
+	placedRemovedConnection = Placedobjects.ChildRemoved:Connect(function(child)
+		removeHitboxOutline(child)
+	end)
+	
+	
+	
+end
+
+local function rendergrid()
+	if plot:FindFirstChild("Gridtexture") then
+		plot:FindFirstChild("Gridtexture"):Destroy()
+	end
+	local grid = Instance.new("Texture")
+	grid.Name = "Gridtexture"
+	grid.StudsPerTileU = 8
+	grid.StudsPerTileV = 8
+	grid.Texture = GridTexture
+	grid.Transparency = .8 
+	grid.Color3 = Color3.fromRGB(75,75,75)
+
+	grid.Face = Enum.NormalId.Top
+	grid.Parent = plot
+end
+
+local function changeHitboxColor()
+	if object.PrimaryPart then
+		highlight.Adornee = object
+		object.PrimaryPart.Transparency = 1
+		
+		if collided then
+			highlight.FillColor = Color3.fromRGB(255,66,66)
+			object.PrimaryPart.Color = Color3.fromRGB(255,66,66)
+			if objectHitbox then
+				objectHitbox.Color = Color3.fromRGB(134, 0, 0)
+				if objectHitbox:FindFirstChild("PlacementHitboxOutline") then
+					objectHitbox.PlacementHitboxOutline.Color3 = Color3.fromRGB(255,0,0)
+				end
+				if objectHitbox:FindFirstChild("Highlight") then
+					objectHitbox.Highlight.FillColor = Color3.fromRGB(134, 0, 0)
+				end
+			end
+		else
+			if objectHitbox then
+				objectHitbox.Color = Color3.fromRGB(0, 85, 0)
+				if objectHitbox:FindFirstChild("PlacementHitboxOutline") then
+					objectHitbox.PlacementHitboxOutline.Color3 = Color3.fromRGB(0,255,0)
+				end
+				if objectHitbox:FindFirstChild("Highlight") then
+					objectHitbox.Highlight.FillColor = Color3.fromRGB(0, 85, 0)
+				end
+			end
+			highlight.FillColor = Color3.fromRGB(0, 255, 0)
+			object.PrimaryPart.Color = Color3.fromRGB(0, 255, 0)
+		end
+	else
+		highlight.Adornee = nil
+	end
+end
+local function getTutorialTent()
+	if not player:GetAttribute("InTutorial") then
+		return nil
+	end
+
+	if not plot then
+		return nil
+	end
+
+	local placed = plot:FindFirstChild("Placed")
+	if not placed then
+		return nil
+	end
+
+	local breakables = placed:FindFirstChild("Breakables")
+	local tent = breakables and breakables:FindFirstChild("Tent")
+
+	if tent and tent:IsA("Model") and tent.PrimaryPart then
+		return tent
+	end
+
+	return nil
+end
+
+local function getTutorialBomber()
+	if not player:GetAttribute("InTutorial") then
+		return nil
+	end
+
+	if not Placedobjects then
+		return nil
+	end
+
+	local bombers = Placedobjects:FindFirstChild("Bombers")
+	if not bombers then
+		return nil
+	end
+
+	for _, bomber in ipairs(bombers:GetChildren()) do
+		if bomber:IsA("Model") and bomber.PrimaryPart then
+			local range = bomber:GetAttribute("Range")
+
+			if range then
+				return bomber, range
+			end
+		end
+	end
+
+	return nil
+end
+
+
+local function isValidTutorialPosition(position)
+	if not player:GetAttribute("InTutorial") then
+		return true
+	end
+
+	local tent = getTutorialTent()
+	local bomber, bomberRange = getTutorialBomber()
+
+	if not tent or not bomber or not bomberRange then
+		return true
+	end
+
+	local positionXZ = Vector3.new(position.X, 0, position.Z)
+
+	local tentXZ = Vector3.new(
+		tent.PrimaryPart.Position.X,
+		0,
+		tent.PrimaryPart.Position.Z
+	)
+
+	local bomberXZ = Vector3.new(
+		bomber.PrimaryPart.Position.X,
+		0,
+		bomber.PrimaryPart.Position.Z
+	)
+
+	local nearTent = (positionXZ - tentXZ).Magnitude <= TUTORIAL_TENT_DISTANCE
+	local insideBomberRange = (positionXZ - bomberXZ).Magnitude <= bomberRange
+
+	return nearTent and insideBomberRange
+end
+
+local function handlecollision(position)
+	if not object then
+		return
+	end
+
+	collided = false
+
+	local collisionpoint = object.PrimaryPart.Touched:Connect(function()
+	end)
+
+	local collisionpoints = object.PrimaryPart:GetTouchingParts()
+
+	for i = 1, #collisionpoints do
+		if not collisionpoints[i]:IsDescendantOf(object)
+			and not collisionpoints[i]:IsDescendantOf(Character)
+			and not collisionpoints[i]:IsDescendantOf(workspace.Orbs) then
+
+			collided = true
+			break
+		end
+	end
+
+	collisionpoint:Disconnect()
+
+	if not isValidTutorialPosition(position) then
+		collided = true
+	end
+end
+
+local function bounds(cf , offsetx,offsetz)
+	local LowerXBound , UpperXBound
+	local LowerZBound , UpperZBound
+	
+	LowerXBound = plot.Position.X - (plot.Size.X * .5) + offsetx
+	UpperXBound = plot.Position.X + (plot.Size.X * .5) - offsetx
+	
+	LowerZBound = plot.Position.Z - (plot.Size.Z * .5) + offsetz
+	UpperZBound = plot.Position.Z + (plot.Size.Z * .5) - offsetz
+	
+	local newX = clamp(cf.X,LowerXBound,UpperXBound) 
+	local newZ = clamp(cf.Z,LowerZBound,UpperZBound) 
+	
+	return cframe(newX,posY,newZ)
+end
+
+local function approvePlacement()
+	if not verifyPlane() then
+		warn("The Model cannot snap on the plot.")
+		return false
+	end
+
+	if GridSize >= math.min(plot.Size.X,plot.Size.Z) then
+		warn("Grid Size is too big")
+		return false
+	end
+
+	return true
+end
+
+local function calculateYPosition(toP,toS,oS)
+	return (toP + toS *.5) + oS * .5
+end
+
+local function rotate(actionName,InputState,InputObj)
+	if InputState == Enum.UserInputState.Begin then
+		rotation += rotationStep
+		RotationVal = not RotationVal
+	end
+end
+
+function module:Rotate()
+	rotation += rotationStep
+	RotationVal = not RotationVal
+
+	if object and lastValidCFrame then
+		local newCFrame =
+			CFrame.new(lastValidCFrame.Position)
+			* CFrame.Angles(0, math.rad(rotation), 0)
+
+		lastValidCFrame = newCFrame
+		object:PivotTo(newCFrame)
+
+		handlecollision(newCFrame.Position)
+		changeHitboxColor()
+	end
+end
+
+--local function cancel(actionName,InputState,InputObj)
+--	if InputState == Enum.UserInputState.Begin then
+--		if object then
+--			object:Destroy()
+--		end
+--		--object:Destroy()
+--		if plot:FindFirstChild("Gridtexture") then
+--			plot:FindFirstChild("Gridtexture"):Destroy()
+--		end
+--		mouse.TargetFilter = nil
+--	end
+--end
+
+function module.cancel()
+	player:SetAttribute("Placing",false)
+	clearHitboxOutlines()
+
+	highlight.Adornee = nil
+	if object then
+		object:Destroy()
+	end
+	--object:Destroy()
+	if plot:FindFirstChild("Gridtexture") then
+		plot:FindFirstChild("Gridtexture"):Destroy()
+	end
+	mouse.TargetFilter = nil
+	
+	if objectHitbox then
+		objectHitbox:Destroy()
+	end
+	
+	objectHitbox = nil
+
+end
+
+local function unbindInputs()
+	contextActionService:UnbindAction("Rotate")
+	--contextActionService:UnbindAction("Cancel")
+end
+
+local function bindInputs()
+	contextActionService:BindAction("Rotate",rotate,false,RotateKey)
+	--contextActionService:BindAction("Cancel",cancel,false,TerminateKey)
+end
+
+local function snap(c)
+	local newx = math.round(c.X/GridSize)*GridSize
+	local newz = math.round(c.Z/GridSize)*GridSize
+
+	return  cframe(newx,0,newz)
+end
+
+
+
+
+
+local function forceTutorialPosition(position)
+	if not player:GetAttribute("InTutorial") then
+		return position
+	end
+
+	local tent = getTutorialTent()
+
+	if not tent or not tent.PrimaryPart then
+		return position
+	end
+
+	local tentPosition = tent.PrimaryPart.Position
+
+	local target = Vector3.new(position.X, 0, position.Z)
+	local tentXZ = Vector3.new(tentPosition.X, 0, tentPosition.Z)
+
+	local fromTent = target - tentXZ
+	local tentDistance = fromTent.Magnitude
+
+	if tentDistance > TUTORIAL_TENT_DISTANCE then
+		if tentDistance > 0 then
+			target = tentXZ + fromTent.Unit * TUTORIAL_TENT_DISTANCE
+		else
+			target = tentXZ
+		end
+	end
+
+	return Vector3.new(target.X, position.Y, target.Z)
+end
+
+local function calculateModelPosition()
+
+	local finalCFrame = cframe(0,0,0)
+	local x,z
+	local offsetx,offsetz
+	
+	if not object then
+		warn("no object")
+		return cframe(0,0,0)
+	end
+	
+	if not object.PrimaryPart then
+		warn("no object PrimaryPart")
+		return cframe(0,0,0)
+	end
+
+
+	
+	--if RotationVal then
+	--	offsetx , offsetz = object.PrimaryPart.Size.X * .5 ,  object.PrimaryPart.Size.Z * .5
+	--	x,z = mouse.Hit.X - offsetx , mouse.Hit.Z + offsetz
+	--else
+	--	offsetx , offsetz = object.PrimaryPart.Size.Z * .5 ,  object.PrimaryPart.Size.X * .5
+	--	x,z = mouse.Hit.X - offsetx , mouse.Hit.Z + offsetz
+	--end
+	
+	if RotationVal then
+		offsetx = object.PrimaryPart.Size.X * 0.5
+		offsetz = object.PrimaryPart.Size.Z * 0.5
+	else
+		offsetx = object.PrimaryPart.Size.Z * 0.5
+		offsetz = object.PrimaryPart.Size.X * 0.5
+	end
+
+	x = mouse.Hit.X - offsetx
+	z = mouse.Hit.Z - offsetz
+
+	if stackable and mouse.Target and mouse.Target:IsDescendantOf(plot) then
+		posY = calculateYPosition(mouse.Target.Position.Y,mouse.Target.Size.Y,object.PrimaryPart.Size.Y)--mouse.Hit.Y
+	else
+		posY = calculateYPosition(plot.Position.Y,plot.Size.Y,object.PrimaryPart.Size.Y)--mouse.Hit.Y
+
+	end
+
+	if moveByGrid then
+		local pltcframe = cframe(plot.CFrame.X,plot.CFrame.Y,plot.CFrame.Z)
+		local pos = cframe(x,0,z)
+		pos = snap(pos * pltcframe:Inverse())
+		finalCFrame = pos * pltcframe * cframe(offsetx,0,offsetz)
+		--posX = snap(mouse.Hit.X)
+		--posZ = snap(mouse.Hit.Z)
+	else
+		finalCFrame = cframe(mouse.Hit.X,posY,mouse.Hit.Z)
+		--posX = mouse.Hit.X
+		--posZ = mouse.Hit.Z
+	end
+
+	finalCFrame = bounds(
+		cframe(finalCFrame.X, posY, finalCFrame.Z),
+		offsetx,
+		offsetz
+	)
+
+	if player:GetAttribute("InTutorial") then
+		local forcedPosition = forceTutorialPosition(finalCFrame.Position)
+
+		finalCFrame = cframe(
+			forcedPosition.X,
+			posY,
+			forcedPosition.Z
+		)
+	end
+
+	finalCFrame *= angles(0, math.rad(rotation), 0)
+
+	return finalCFrame--cframe(posX,posY,posZ) * angles(0,math.rad(rotation),0)
+end
+
+local playPlacePop 
+local function translateObj()
+
+	if isPointerOverUI() then
+		return
+	end
+
+	if pickupMode then
+
+		if object then
+			object:Destroy()
+		end
+
+		local target = mouse.Target
+
+		if target and target.Parent and target:IsDescendantOf(plot.Placed) then
+			local model = target:FindFirstAncestorOfClass("Model")
+
+			if model and model:IsDescendantOf(plot.Placed) then
+				lastPickupTarget = model
+				pickupHighlight.Adornee = model
+			else
+				pickupHighlight.Parent = game.ReplicatedStorage
+				pickupHighlight.Adornee = nil
+			end
+		else
+			pickupHighlight.Adornee = nil
+		end
+
+		return
+	end
+
+	if Placedobjects and object and object.Parent == Placedobjects then
+		local newPos = calculateModelPosition()
+
+		lastValidCFrame = newPos
+
+		handlecollision(newPos.Position)
+		changeHitboxColor()
+
+		object:PivotTo(object.PrimaryPart.CFrame:Lerp(newPos, speed))
+
+		local visual = object:FindFirstChild("Visual")
+
+		if visual then
+			local mousePos = Vector2.new(mouse.X, mouse.Y)
+			local delta = mousePos - lastMouse
+			lastMouse = mousePos
+
+			local targetTilt = Vector2.new(
+				math.clamp(-delta.Y * 0.35, -MAX_TILT, MAX_TILT),
+				math.clamp(delta.X * 0.35, -MAX_TILT, MAX_TILT)
+			)
+
+			local alpha = targetTilt.Magnitude > 0 and TILT_SPEED or RETURN_SPEED
+			visualRotation = visualRotation:Lerp(targetTilt, alpha)
+
+			local rot =
+				CFrame.Angles(
+					math.rad(visualRotation.X),
+					0,
+					math.rad(visualRotation.Y)
+				)
+
+			if visual:IsA("Model") and visual.PrimaryPart then
+				visual:PivotTo(object.PrimaryPart.CFrame * rot)
+			elseif visual:IsA("BasePart") then
+				visual:PivotTo(object.PrimaryPart.CFrame * rot)
+			end
+		end
+
+		if not lastPosition or (lastPosition and lastPosition ~= newPos) then
+			lastPosition = newPos
+
+			if not playPlacePop then
+				playPlacePop = true
+				SoundsPlay.PlayCloneSFX("Placepops")
+
+				task.delay(0.1, function()
+					playPlacePop = false
+				end)
+			end
+		end
+	end
+end
+
+local function getInstantCFrame()
+	return lastValidCFrame or calculateModelPosition()
+end
+
+function module:PickupRequest(remote)
+	if pickupMode then
+
+		local model = lastPickupTarget
+
+		if model and model.Parent and model:IsDescendantOf(plot.Placed) then
+			remote:InvokeServer(model, plot)
+			SoundsPlay.PlayCloneSFX("Pickup")
+		end
+
+		return
+	end
+end
+
+function module:PickupCancel(Plot)
+
+	player:SetAttribute("Placing",false)
+	
+	clearHitboxOutlines()
+	plot = Plot
+	pickupMode = false
+	lastPickupTarget = nil
+	if pickupHighlight then
+		pickupHighlight:Destroy()
+		pickupHighlight = nil
+	end
+end
+
+function module:place(remote , upgrades)
+	
+	print("fired")
+	if not collided and object then
+		local cf = getInstantCFrame()
+		remote:InvokeServer(object.Name , Placedobjects, cf ,plot,nil,nil,upgrades)
+		SoundsPlay.PlayCloneSFX("Place")
+	else
+		Notifications.Notification("Error","You cannot place here!")
+	end
+end
+
+function module.new(gridsize , objectLocation , rotate , terminate)
+	local data = {}
+	local metaData = setmetatable(data,module)
+
+	GridSize = gridsize
+	ItemLocation = objectLocation
+	RotateKey = rotate
+	TerminateKey = terminate
+
+	data.grid = gridsize
+	data.itemlocation = ItemLocation
+	data.rotationkey = RotateKey
+	data.terminatekey = TerminateKey
+
+	return data
+
+end
+
+function module:Pickup(Plot,PlacedObjects)
+	plot = if Plot then Plot else plot
+	pickupMode = true
+	lastPickupTarget = nil
+	player:SetAttribute("Placing",true)
+	
+	Placedobjects = PlacedObjects or Placedobjects
+
+	if pickupHighlight then
+		pickupHighlight:Destroy()
+	end
+
+	showHitboxOutlines() -- not working?
+
+	pickupHighlight = Instance.new("Highlight")
+	pickupHighlight.FillTransparency = .8
+	pickupHighlight.FillColor = Color3.fromRGB(255, 0, 0)
+	pickupHighlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+	pickupHighlight.Parent = game.ReplicatedStorage
+end
+
+--activate placement 
+function module:activate(id ,PlacedObjects,Plot,Stackable)
+	
+	if object then
+		object:Destroy()
+	end
+	
+	if not ItemLocation:FindFirstChild(id) then
+		return
+	end
+	
+	object = ItemLocation:FindFirstChild(id):Clone()
+	object:SetAttribute("Placing",true)
+	Placedobjects = PlacedObjects
+	plot = Plot
+	stackable = Stackable
+	rotation = 0
+	
+	lastValidCFrame = nil
+	lastPosition = nil
+
+	
+	player:SetAttribute("Placing",true)
+	
+	if player:GetAttribute("InTutorial") then
+		-- force the player to place near the tent with it being inside the Bombers range
+	end
+	
+	if not objectHitbox then
+		local outline = Instance.new("Part")
+		outline.Name = "PlacementHitboxOutline"
+		outline.Anchored = true
+		outline.CanCollide = false
+		outline.CanQuery = false
+		outline.CanTouch = false
+		outline.Transparency = 0.85
+		outline.Size = Vector3.new(object.PrimaryPart.Size.X,object.PrimaryPart.Size.Y * .1,object.PrimaryPart.Size.Z) + Vector3.new(1,0,1)
+		outline.CFrame = CFrame.new(object.PrimaryPart.Position - Vector3.new(0,object.PrimaryPart.Size.Y/2,0))
+		outline.Parent = object
+		outline.Color = Color3.fromRGB(255, 0, 0)
+		outline.Material = Enum.Material.Neon
+
+		local newhighlight = Instance.new("Highlight")
+		newhighlight.FillTransparency = .75 
+		newhighlight.FillColor = Color3.fromRGB(255, 0, 0)
+		newhighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+		newhighlight.OutlineTransparency = 1
+		newhighlight.Parent = outline
+		newhighlight.Adornee = object
+		newhighlight.DepthMode = Enum.HighlightDepthMode.Occluded
+
+		local selectionbox = Instance.new("SelectionBox")
+		selectionbox.Name = "PlacementHitboxOutline"
+		selectionbox.Adornee = outline
+		selectionbox.Color3 = Color3.fromRGB(255, 0, 0)
+		selectionbox.LineThickness = .15
+		selectionbox.SurfaceTransparency = 1
+		selectionbox.Parent = outline
+
+
+		objectHitbox = outline
+	end
+
+
+	for _,v in pairs(object:GetDescendants()) do
+		if v:IsA("BasePart") or v:IsA("MeshPart") or v:IsA("UnionOperation") then
+			v.Anchored = true
+			v.CanCollide = false
+		end
+	end
+
+	if not approvePlacement() then
+		return
+	end
+
+	if object:HasTag("Bombers") then
+		object:SetAttribute("RangeHighlight",true)
+		object:AddTag("Placing")
+	end
+
+	RotationVal = true
+
+	if not stackable  then
+		mouse.TargetFilter = Placedobjects
+	else
+		mouse.TargetFilter = object
+	end
+
+
+
+	local prespeed = 1
+
+	if interpolation then
+		prespeed = math.clamp(math.abs(tonumber(1 - LerpSpeed)),0,.9)
+	else
+		prespeed = speed
+	end
+
+	object.Parent = Placedobjects
+	showHitboxOutlines()
+	rendergrid()
+	task.wait()
+
+	bindInputs()
+	speed = prespeed
+	
+	return true
+
+end
+
+runService:BindToRenderStep("Input",Enum.RenderPriority.Input.Value,translateObj)
+
+player.CharacterAdded:Connect(function(c)
+	Character = c or player.Character or player.CharacterAdded:Wait()
+	
+end)
+
+return module
